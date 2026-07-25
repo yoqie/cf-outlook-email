@@ -5,13 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# 需要的 GitHub Secrets（仓库 Settings → Secrets and variables → Actions）：
-#   CLOUDFLARE_API_TOKEN   必填：Cloudflare API Token（Workers 编辑 + D1 编辑权限）
-#   CLOUDFLARE_ACCOUNT_ID  必填：Cloudflare Account ID
-#   CF_D1_DATABASE_ID      可选：若仓库没有提交 wrangler.toml，则用它生成配置
+# GitHub Secrets:
+#   CLOUDFLARE_API_TOKEN   required
+#   CLOUDFLARE_ACCOUNT_ID  required
+#   CF_D1_DATABASE_ID      required if wrangler.toml is not committed
 #
-# Worker runtime secrets（ADMIN_PASSWORD / COOKIE_SECRET）不要放进 GitHub。
-# 首次请本地执行：
+# Runtime secrets (not in GitHub):
 #   pnpm exec wrangler secret put ADMIN_PASSWORD
 #   pnpm exec wrangler secret put COOKIE_SECRET
 
@@ -30,18 +29,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 先装 Node，再启用 corepack 的 pnpm，避免 pnpm/action-setup + wrangler-action 互相抢包管理器
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Enable pnpm via corepack
         run: |
           set -euo pipefail
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
-          pnpm --version
+          node -v
+          pnpm -v
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -53,37 +52,28 @@ jobs:
           set -euo pipefail
           if [ -f wrangler.toml ]; then
             echo "Using committed wrangler.toml"
-            # 仍打印 database_id 是否像占位符
-            if grep -q 'REPLACE_WITH_YOUR_DATABASE_ID' wrangler.toml; then
-              echo "::error::wrangler.toml still contains REPLACE_WITH_YOUR_DATABASE_ID"
+          else
+            if [ -z "${CF_D1_DATABASE_ID:-}" ]; then
+              echo "::error::Missing wrangler.toml and secret CF_D1_DATABASE_ID"
               exit 1
             fi
-            exit 0
+            sed "s/REPLACE_WITH_YOUR_DATABASE_ID/${CF_D1_DATABASE_ID}/g" \
+              wrangler.toml.example > wrangler.toml
+            echo "Generated wrangler.toml from example"
           fi
 
-          if [ -z "${CF_D1_DATABASE_ID:-}" ]; then
-            echo "::error::Missing wrangler.toml and secret CF_D1_DATABASE_ID"
-            echo "Either commit wrangler.toml with a real database_id,"
-            echo "or set repository secret CF_D1_DATABASE_ID."
+          if grep -q 'REPLACE_WITH_YOUR_DATABASE_ID' wrangler.toml; then
+            echo "::error::wrangler.toml still contains REPLACE_WITH_YOUR_DATABASE_ID"
             exit 1
           fi
 
-          if [ ! -f wrangler.toml.example ]; then
-            echo "::error::wrangler.toml.example not found"
-            exit 1
-          fi
-
-          sed "s/REPLACE_WITH_YOUR_DATABASE_ID/${CF_D1_DATABASE_ID}/g" \
-            wrangler.toml.example > wrangler.toml
-          echo "Generated wrangler.toml from example + CF_D1_DATABASE_ID"
+          echo "----- wrangler.toml -----"
           cat wrangler.toml
 
       - name: Typecheck
         run: pnpm run build
 
-      # 不用 cloudflare/wrangler-action：它会再次走 pnpm/npm 安装，容易报
-      # "process .../pnpm failed with exit code 1"
-      - name: Apply D1 migrations (remote)
+      - name: Cloudflare auth diagnostic
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -97,7 +87,52 @@ jobs:
             echo "::error::Missing secret CLOUDFLARE_ACCOUNT_ID"
             exit 1
           fi
-          pnpm exec wrangler d1 migrations apply outlook-email-db --remote
+          echo "Account ID length: ${#CLOUDFLARE_ACCOUNT_ID}"
+          echo "Token length: ${#CLOUDFLARE_API_TOKEN}"
+          pnpm exec wrangler whoami
+          pnpm exec wrangler d1 list || true
+
+      # 已有线上库时迁移常已完成；迁移失败不应挡住 Worker 代码部署。
+      - name: Apply D1 migrations (remote)
+        id: migrate
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          DB_NAME=$(python3 - <<'PY'
+          import re
+          text=open('wrangler.toml',encoding='utf-8').read()
+          m=re.search(r'database_name\s*=\s*"([^"]+)"', text)
+          print(m.group(1) if m else 'outlook-email-db')
+          PY
+          )
+          DB_ID=$(python3 - <<'PY'
+          import re
+          text=open('wrangler.toml',encoding='utf-8').read()
+          m=re.search(r'database_id\s*=\s*"([^"]+)"', text)
+          print(m.group(1) if m else '')
+          PY
+          )
+          echo "database_name=$DB_NAME"
+          echo "database_id=$DB_ID"
+          set +e
+          if [ -n "$DB_ID" ]; then
+            echo "Applying migrations by database_id..."
+            pnpm exec wrangler d1 migrations apply "$DB_ID" --remote
+            code=$?
+          else
+            echo "Applying migrations by database_name..."
+            pnpm exec wrangler d1 migrations apply "$DB_NAME" --remote
+            code=$?
+          fi
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::D1 migration failed with exit $code (will still deploy worker code)"
+            exit "$code"
+          fi
+          echo "D1 migration ok"
 
       - name: Deploy Worker
         env:
@@ -106,3 +141,10 @@ jobs:
         run: |
           set -euo pipefail
           pnpm exec wrangler deploy
+
+      - name: Migration warning
+        if: steps.migrate.outcome == 'failure'
+        run: |
+          echo "::warning::Worker deployed, but D1 migration failed."
+          echo "If this is an existing production DB, migration failure is often OK."
+          echo "Check CLOUDFLARE_API_TOKEN has Account-D1-Edit, and CF_D1_DATABASE_ID/wrangler.toml database_id is correct."

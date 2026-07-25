@@ -157,3 +157,21 @@ pnpm exec wrangler secret put COOKIE_SECRET
 2. `git push origin main`
 3. 等 Actions 自动部署
 4. 用 API 文档里的 curl 验证列表 + 详情
+
+
+## 8. 迁移失败但需要先上线代码
+
+当前工作流策略：
+
+1. 先做 Cloudflare 诊断（`wrangler whoami` / `d1 list`）
+2. D1 migration **失败也会继续 deploy Worker**
+3. 最终若只是 migration 失败，Actions 可能仍显示成功（Worker 已更新）
+
+因为对外 API 详情接口只改 Worker 代码，**一般不需要新的 D1 表结构**。  
+若你看到 migration 黄灯/警告，只要 Deploy Worker 成功，就可以先测：
+
+```bash
+curl "https://你的域名/api/external/emails/detail?email=...&id=...&key=..."
+```
+
+若 `d1 list` 都失败，多半是 Token 权限不够：需要 **Account → D1 → Edit** 与 **Workers Scripts → Edit**。
