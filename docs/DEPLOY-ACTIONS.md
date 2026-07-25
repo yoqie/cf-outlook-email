@@ -106,7 +106,25 @@ curl "https://你的域名/api/external/emails/detail?email=你的邮箱&id=消�
 
 ## 6. 常见问题
 
+### `pnpm failed with exit code 1` / Action failed
+
+常见于旧版工作流使用 `cloudflare/wrangler-action` 时，它会**再次**调用 pnpm 安装，和仓库锁文件冲突。
+
+当前工作流已改为：
+
+1. `corepack` 启用 pnpm  
+2. `pnpm install --frozen-lockfile`  
+3. 直接 `pnpm exec wrangler ...` 迁移并部署  
+
+若仍失败，打开失败 step 日志确认是：
+
+- **Install dependencies**：锁文件不一致 → 本地 `pnpm install` 后提交 `pnpm-lock.yaml`
+- **Ensure wrangler.toml**：缺 `CF_D1_DATABASE_ID` 或 `wrangler.toml`
+- **Apply D1 migrations**：Token 没有 D1 权限，或 database_id 错误
+- **Deploy Worker**：Token 没有 Workers 编辑权限
+
 ### Actions 绿了，但 detail 仍 401
+
 
 1. 确认本次 Deploy 的 commit 里 `src/routes/external.ts` **包含** `external.get('/emails/detail'`
 2. 打开该次 workflow 日志，确认 Deploy 步骤成功且 worker 名称是你的线上项目
