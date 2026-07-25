@@ -12,6 +12,7 @@
 - [第五步：配置密码](#第五步配置密码)
 - [第六步：初始化数据库](#第六步初始化数据库)
 - [第七步：部署](#第七步部署)
+- [使用 GitHub Actions 自动部署](./DEPLOY-ACTIONS.md)
 - [第八步：添加邮箱账号](#第八步添加邮箱账号)
 - [本地开发](#本地开发)
 - [关于 Client ID](#关于-client-id)
@@ -145,6 +146,23 @@ https://outlook-email.你的用户名.workers.dev
 打开这个地址，用第五步设的密码登录。
 
 ---
+
+
+
+---
+
+## 使用 GitHub Actions 自动部署
+
+如果你希望以后改代码后 **push 到 GitHub 就自动部署**，不要每次本机 `wrangler deploy`，请看：
+
+📖 [使用 GitHub Actions 自动部署](./DEPLOY-ACTIONS.md)
+
+简要步骤：
+
+1. 仓库配置 Secrets：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、（可选）`CF_D1_DATABASE_ID`
+2. 确认存在 `.github/workflows/deploy-cloudflare.yml`
+3. `git push origin main`，或在 Actions 页面手动 Run workflow
+4. 用 [对外 API 文档](./API.md) 验证列表 + 详情接口
 
 ## 第八步：添加邮箱账号
 

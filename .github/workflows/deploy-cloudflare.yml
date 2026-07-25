@@ -1,0 +1,88 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 需要的 GitHub Secrets（仓库 Settings → Secrets and variables → Actions）：
+#   CLOUDFLARE_API_TOKEN   必填：Cloudflare API Token（Workers 编辑 + D1 编辑权限）
+#   CLOUDFLARE_ACCOUNT_ID  必填：Cloudflare Account ID
+#   CF_D1_DATABASE_ID      可选：若仓库没有提交 wrangler.toml，则用它生成配置
+#
+# Worker runtime secrets（ADMIN_PASSWORD / COOKIE_SECRET）不要放进 GitHub。
+# 首次请本地执行：
+#   pnpm exec wrangler secret put ADMIN_PASSWORD
+#   pnpm exec wrangler secret put COOKIE_SECRET
+
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Ensure wrangler.toml
+        env:
+          CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -f wrangler.toml ]; then
+            echo "Using committed wrangler.toml"
+            exit 0
+          fi
+
+          if [ -z "${CF_D1_DATABASE_ID:-}" ]; then
+            echo "::error::Missing wrangler.toml and secret CF_D1_DATABASE_ID"
+            echo "Either commit wrangler.toml with a real database_id,"
+            echo "or set repository secret CF_D1_DATABASE_ID."
+            exit 1
+          fi
+
+          if [ ! -f wrangler.toml.example ]; then
+            echo "::error::wrangler.toml.example not found"
+            exit 1
+          fi
+
+          sed "s/REPLACE_WITH_YOUR_DATABASE_ID/${CF_D1_DATABASE_ID}/g" \
+            wrangler.toml.example > wrangler.toml
+          echo "Generated wrangler.toml from example + CF_D1_DATABASE_ID"
+
+      - name: Typecheck
+        run: pnpm run build
+
+      - name: Apply D1 migrations (remote)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply outlook-email-db --remote
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

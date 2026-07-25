@@ -17,7 +17,7 @@
 
 ⚠️ 此按钮**无法一键部署**：项目依赖 D1 数据库与 Secret，需手动建库、跑迁移、设密钥，按钮会因框架检测失败而报错。请按 📖 [详细部署教程](./docs/GUIDE.md) 操作（约 5 分钟）。
 
-🌐 [English](./README_EN.md) · 📖 [详细部署教程](./docs/GUIDE.md) · 🔌 [对外 API 文档](./docs/API.md)
+🌐 [English](./README_EN.md) · 📖 [详细部署教程](./docs/GUIDE.md) · 🤖 [Actions 自动部署](./docs/DEPLOY-ACTIONS.md) · 🔌 [对外 API 文档](./docs/API.md)
 
 </div>
 
@@ -66,6 +66,19 @@ pnpm exec wrangler deploy
 ```
 
 部署完成后访问输出的 URL，用设置的密码登录即可。🎉
+
+
+## 🤖 GitHub Actions 自动部署
+
+本地首次部署成功后，可改用 GitHub Actions：push 到 `main` 自动更新线上 Worker。
+
+1. 配置仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、必要时 `CF_D1_DATABASE_ID`
+2. 推送代码：`git push origin main`
+3. 在 Actions 查看 **Deploy to Cloudflare Workers**
+
+完整说明：[docs/DEPLOY-ACTIONS.md](./docs/DEPLOY-ACTIONS.md)
+
+对外 API（含**邮件详情完整正文**）见：[docs/API.md](./docs/API.md)
 
 ## 📮 添加邮箱
 
