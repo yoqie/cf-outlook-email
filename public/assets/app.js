@@ -449,6 +449,7 @@ async function renderAccounts(el) {
     <button class="btn btn-primary btn-sm" onclick="showAddAccountModal()">${t('+ 添加账号')}</button>
     <button class="btn btn-sm" onclick="showImportModal()">${t('批量导入')}</button>
     <button class="btn btn-sm" onclick="exportAccounts()">${t('导出全部')}</button>
+    <button class="btn btn-sm" id="oneClickTestBtn" onclick="oneClickTestAccounts(this)">${t('一键测试')}</button>
   </div>
   <div id="batchBar" style="display:none;margin-top:10px;padding:10px 14px;background:var(--primary-bg);border:1px solid var(--border-focus);border-radius:8px;align-items:center;gap:8px;font-size:13px">
     <span id="batchCount" style="color:var(--primary)"></span>
@@ -705,10 +706,25 @@ async function batchAction(action) {
 // Batch-test Graph connection for selected accounts.
 // Server caps each request at 40 (CF free-tier subrequest budget); larger
 // selections are chunked client-side so all selected accounts get tested.
-async function batchTestAccounts(btn) {
-  const ids = [...selectedAccountIds];
+// One-click test: use selected accounts if any, otherwise all currently filtered accounts.
+async function oneClickTestAccounts(btn) {
+  let ids = [...selectedAccountIds];
+  if (!ids.length) {
+    const list = (accountsView && accountsView.length) ? accountsView : (state.accounts || []);
+    ids = list.map(a => a.id).filter(id => Number.isInteger(id) && id > 0);
+  }
+  if (!ids.length) { toast(t('暂无账号可测试'), 'error'); return; }
+  await batchTestAccounts(btn, ids, true);
+}
+
+// Batch-test Graph connection for given/selected accounts.
+// Server caps each request at 40 (CF free-tier subrequest budget); larger
+// selections are chunked client-side so all selected accounts get tested.
+async function batchTestAccounts(btn, explicitIds, isOneClick) {
+  const ids = explicitIds?.length ? [...explicitIds] : [...selectedAccountIds];
   if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
 
+  const idleLabel = isOneClick ? t('一键测试') : t('批量测试');
   if (btn) { btn.disabled = true; btn.textContent = t('测试中...'); }
   toast(t('正在批量测试 {n} 个账号...', { n: ids.length }));
 
@@ -738,7 +754,7 @@ async function batchTestAccounts(btn) {
     }
   }
 
-  if (btn) { btn.disabled = false; btn.textContent = t('批量测试'); }
+  if (btn) { btn.disabled = false; btn.textContent = idleLabel; }
 
   // Show a summary modal when there are failures; otherwise a simple toast.
   const summary = t('批量测试完成：成功 {ok}，失败 {fail}', { ok: success, fail: failed });
