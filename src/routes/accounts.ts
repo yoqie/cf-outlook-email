@@ -191,8 +191,11 @@ accounts.get('/export', async (c) => {
     rows = await query<ExportRow>(c.env.DB, sql, params);
   }
 
-  const lines = rows.map(r => `${r.email}----${r.password || ''}----${r.client_id}----${r.refresh_token}`);
-  return ok({ content: lines.join('\n'), count: rows.length });
+  const emailsOnly = c.req.query('emails_only') === '1' || c.req.query('emails_only') === 'true';
+  const lines = emailsOnly
+    ? rows.map((r) => r.email)
+    : rows.map((r) => `${r.email}----${r.password || ''}----${r.client_id}----${r.refresh_token}`);
+  return ok({ content: lines.join('\n'), count: rows.length, emails_only: emailsOnly });
 });
 
 // POST /api/accounts/batch - batch operations (delete / move group)

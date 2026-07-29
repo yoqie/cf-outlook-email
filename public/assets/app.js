@@ -449,6 +449,7 @@ async function renderAccounts(el) {
     <button class="btn btn-primary btn-sm" onclick="showAddAccountModal()">${t('+ 添加账号')}</button>
     <button class="btn btn-sm" onclick="showImportModal()">${t('批量导入')}</button>
     <button class="btn btn-sm" onclick="exportAccounts()">${t('导出全部')}</button>
+    <button class="btn btn-sm" onclick="exportEmailsOnly()">${t('单导邮箱')}</button>
     <button class="btn btn-sm" id="oneClickTestBtn" onclick="oneClickTestAccounts(this)">${t('一键测试')}</button>
   </div>
   <div id="batchBar" style="display:none;margin-top:10px;padding:10px 14px;background:var(--primary-bg);border:1px solid var(--border-focus);border-radius:8px;align-items:center;gap:8px;font-size:13px">
@@ -458,6 +459,7 @@ async function renderAccounts(el) {
     <button class="btn btn-sm" onclick="batchAction('disable')">${t('批量停用')}</button>
     <button class="btn btn-sm" onclick="batchTestAccounts(this)">${t('批量测试')}</button>
     <button class="btn btn-sm" onclick="exportSelected()">${t('导出选中')}</button>
+    <button class="btn btn-sm" onclick="exportSelectedEmails()">${t('单导选中邮箱')}</button>
     <button class="btn btn-sm btn-danger" onclick="batchAction('delete')">${t('批量删除')}</button>
     <button class="btn btn-sm" onclick="clearSelection()">${t('取消选择')}</button>
   </div>
@@ -594,27 +596,42 @@ function goToEmail(accountId) {
 
 // Export accounts. Pass an array of ids to export specific rows (single or selected);
 // omit to export all (respecting the current group filter).
-async function exportAccounts(ids) {
+async function exportAccounts(ids, opts) {
+  const emailsOnly = !!(opts && opts.emailsOnly);
   let url = '/accounts/export';
+  const params = [];
   if (Array.isArray(ids) && ids.length) {
-    url += '?ids=' + ids.join(',');
+    params.push('ids=' + ids.join(','));
   } else {
     const groupFilter = document.getElementById('accountGroupFilter')?.value;
-    if (groupFilter) url += '?group_id=' + groupFilter;
+    if (groupFilter) params.push('group_id=' + groupFilter);
   }
+  if (emailsOnly) params.push('emails_only=1');
+  if (params.length) url += '?' + params.join('&');
   const res = await api(url);
   if (!res?.success || !res.data?.content) { toast(t('没有可导出的账号'), 'error'); return; }
 
-  showModal(t('导出账号 ({n} 个)', { n: res.data.count }), `
+  const title = emailsOnly
+    ? t('单导邮箱 ({n} 个)', { n: res.data.count })
+    : t('导出账号 ({n} 个)', { n: res.data.count });
+  const formatHint = emailsOnly
+    ? t('单导内容（每行一个邮箱）')
+    : t('导出内容（格式：邮箱----密码----client_id----refresh_token）');
+  const downloadName = emailsOnly ? 'emails' : 'accounts';
+  showModal(title, `
     <div class="form-group">
-      <label class="form-label">${t('导出内容（格式：邮箱----密码----client_id----refresh_token）')}</label>
+      <label class="form-label">${formatHint}</label>
       <textarea class="form-textarea" id="exportData" rows="10" readonly style="font-size:12px">${esc(res.data.content)}</textarea>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-primary btn-sm" type="button" onclick="copyText(document.getElementById('exportData').value,this)">${t('复制全部')}</button>
-      <button class="btn btn-sm" type="button" onclick="downloadExport()">${t('下载 TXT')}</button>
+      <button class="btn btn-sm" type="button" onclick="downloadExport('${downloadName}')">${t('下载 TXT')}</button>
     </div>
   `, () => true);
+}
+
+function exportEmailsOnly() {
+  return exportAccounts(undefined, { emailsOnly: true });
 }
 
 // Export currently selected accounts (from the batch bar)
@@ -624,13 +641,20 @@ function exportSelected() {
   exportAccounts(ids);
 }
 
-function downloadExport() {
+function exportSelectedEmails() {
+  const ids = [...selectedAccountIds];
+  if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
+  exportAccounts(ids, { emailsOnly: true });
+}
+
+function downloadExport(prefix) {
   const text = document.getElementById('exportData')?.value;
   if (!text) return;
+  const name = (prefix || 'accounts') + '_' + new Date().toISOString().slice(0, 10) + '.txt';
   const blob = new Blob([text], { type: 'text/plain' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'accounts_' + new Date().toISOString().slice(0,10) + '.txt';
+  a.download = name;
   a.click();
   URL.revokeObjectURL(a.href);
 }
