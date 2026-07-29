@@ -1,4 +1,4 @@
-name: Deploy to Cloudflare Workers
+﻿name: Deploy to Cloudflare Workers
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 # GitHub Secrets:
-#   CLOUDFLARE_API_TOKEN   required
+#   CLOUDFLARE_API_TOKEN   required (Workers Scripts Edit + D1 Edit)
 #   CLOUDFLARE_ACCOUNT_ID  required
 #   CF_D1_DATABASE_ID      required if wrangler.toml is not committed
 #
@@ -90,9 +90,23 @@ jobs:
           echo "Account ID length: ${#CLOUDFLARE_ACCOUNT_ID}"
           echo "Token length: ${#CLOUDFLARE_API_TOKEN}"
           pnpm exec wrangler whoami
-          pnpm exec wrangler d1 list || true
 
-      # 已有线上库时迁移常已完成；迁移失败不应挡住 Worker 代码部署。
+          set +e
+          pnpm exec wrangler d1 list
+          d1_code=$?
+          set -e
+          if [ "$d1_code" -ne 0 ]; then
+            echo "::warning::wrangler d1 list failed (exit $d1_code)."
+            echo "Token can authenticate (whoami OK) but likely lacks Account → D1 → Edit."
+            echo "Recreate token from https://dash.cloudflare.com/profile/api-tokens"
+            echo "Use template 'Edit Cloudflare Workers' and explicitly add Account → D1 → Edit."
+            echo "Also verify CLOUDFLARE_ACCOUNT_ID matches the account that owns the D1 database."
+          else
+            echo "D1 list OK"
+          fi
+
+      # Existing remote DBs may already be migrated. Migration failure must not block Worker deploy.
+      # wrangler d1 migrations apply expects database_name or binding from wrangler.toml — NOT database_id UUID.
       - name: Apply D1 migrations (remote)
         id: migrate
         continue-on-error: true
@@ -108,6 +122,16 @@ jobs:
           print(m.group(1) if m else 'outlook-email-db')
           PY
           )
+          DB_BINDING=$(python3 - <<'PY'
+          import re
+          text=open('wrangler.toml',encoding='utf-8').read()
+          # first binding under d1_databases block is enough for this project
+          m=re.search(r'\[\[d1_databases\]\][\s\S]*?binding\s*=\s*"([^"]+)"', text)
+          if not m:
+            m=re.search(r'binding\s*=\s*"([^"]+)"', text)
+          print(m.group(1) if m else 'DB')
+          PY
+          )
           DB_ID=$(python3 - <<'PY'
           import re
           text=open('wrangler.toml',encoding='utf-8').read()
@@ -116,20 +140,24 @@ jobs:
           PY
           )
           echo "database_name=$DB_NAME"
+          echo "binding=$DB_BINDING"
           echo "database_id=$DB_ID"
+          echo "Applying migrations by database_name (wrangler does not accept database_id UUID here)..."
           set +e
-          if [ -n "$DB_ID" ]; then
-            echo "Applying migrations by database_id..."
-            pnpm exec wrangler d1 migrations apply "$DB_ID" --remote
-            code=$?
-          else
-            echo "Applying migrations by database_name..."
-            pnpm exec wrangler d1 migrations apply "$DB_NAME" --remote
+          pnpm exec wrangler d1 migrations apply "$DB_NAME" --remote
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "Retrying migrations by binding name..."
+            pnpm exec wrangler d1 migrations apply "$DB_BINDING" --remote
             code=$?
           fi
           set -e
           if [ "$code" -ne 0 ]; then
             echo "::warning::D1 migration failed with exit $code (will still deploy worker code)"
+            echo "Common causes:"
+            echo "  1) CLOUDFLARE_API_TOKEN missing Account → D1 → Edit"
+            echo "  2) CF_D1_DATABASE_ID / wrangler.toml database_id is wrong for this account"
+            echo "  3) D1 database does not exist yet — create it once locally, then set CF_D1_DATABASE_ID"
             exit "$code"
           fi
           echo "D1 migration ok"
@@ -147,4 +175,6 @@ jobs:
         run: |
           echo "::warning::Worker deployed, but D1 migration failed."
           echo "If this is an existing production DB, migration failure is often OK."
-          echo "Check CLOUDFLARE_API_TOKEN has Account-D1-Edit, and CF_D1_DATABASE_ID/wrangler.toml database_id is correct."
+          echo "Check CLOUDFLARE_API_TOKEN has Account → D1 → Edit."
+          echo "Check CF_D1_DATABASE_ID / wrangler.toml database_id is correct."
+          echo "wrangler d1 migrations apply must use database_name (e.g. outlook-email-db) or binding (DB), not the UUID."
