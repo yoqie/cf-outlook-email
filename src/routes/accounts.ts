@@ -258,6 +258,93 @@ accounts.post('/batch', async (c) => {
   return badRequest('未知操作');
 });
 
+// POST /api/accounts/batch-test - test Graph connection for many accounts
+// MUST be before /:id. Free-plan subrequest budget caps this at 40/request;
+// the UI chunks larger selections into multiple calls.
+accounts.post('/batch-test', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: number[] };
+  if (!body.ids?.length) return badRequest('请选择账号');
+
+  // Deduplicate + keep only positive integers
+  const ids = [...new Set(
+    body.ids.filter((id) => Number.isInteger(id) && id > 0)
+  )];
+  if (!ids.length) return badRequest('请选择账号');
+
+  const MAX_BATCH_TEST = 40;
+  const capped = ids.slice(0, MAX_BATCH_TEST);
+  const skipped = ids.length - capped.length;
+
+  const placeholders = capped.map(() => '?').join(',');
+  const accounts = await query<AccountRow>(
+    c.env.DB,
+    `SELECT * FROM accounts WHERE id IN (${placeholders})`,
+    capped
+  );
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+
+  const results: {
+    id: number;
+    email: string;
+    connected: boolean;
+    error?: string;
+  }[] = [];
+  let success = 0;
+  let failed = 0;
+
+  for (const id of capped) {
+    const acc = byId.get(id);
+    if (!acc) {
+      results.push({ id, email: '', connected: false, error: '账号不存在' });
+      failed++;
+      continue;
+    }
+
+    const result = await getAccessToken(acc.client_id, acc.refresh_token);
+    if (result.token) {
+      const updates: unknown[] = ['active', id];
+      let sql = 'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP';
+      if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
+        sql = 'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP';
+        updates.splice(0, 0, result.newRefreshToken);
+      }
+      sql += ' WHERE id = ?';
+      await run(c.env.DB, sql, updates);
+      results.push({ id, email: acc.email, connected: true });
+      success++;
+    } else {
+      await run(
+        c.env.DB,
+        'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        ['error', id]
+      );
+      results.push({
+        id,
+        email: acc.email,
+        connected: false,
+        error: result.error?.message ?? 'Unknown error',
+      });
+      failed++;
+    }
+  }
+
+  const msg =
+    skipped > 0
+      ? `批量测试完成：成功 ${success}，失败 ${failed}，超出上限未测 ${skipped}`
+      : `批量测试完成：成功 ${success}，失败 ${failed}`;
+
+  return ok(
+    {
+      total: capped.length,
+      success,
+      failed,
+      skipped,
+      results,
+    },
+    msg
+  );
+});
+
 // GET /api/accounts/:id
 accounts.get('/:id', async (c) => {
   const id = parseInt(c.req.param('id'), 10);

@@ -117,6 +117,7 @@ var I18N_EN = {
   '移动分组': 'Move to Group',
   '批量启用': 'Enable',
   '批量停用': 'Disable',
+  '批量测试': 'Batch Test',
   '导出选中': 'Export Selected',
   '批量删除': 'Delete',
   '取消选择': 'Clear',
@@ -133,6 +134,12 @@ var I18N_EN = {
   '复制邮箱': 'Copy email address',
   '测试': 'Test',
   '测试中...': 'Testing...',
+  '正在批量测试 {n} 个账号...': 'Batch-testing {n} accounts...',
+  '批量测试完成：成功 {ok}，失败 {fail}': 'Batch test done: {ok} ok, {fail} failed',
+  '失败账号一览（状态已标为异常）': 'Failed accounts (marked as error)',
+  '还有 {n} 个失败账号未列出': '{n} more failed accounts not listed',
+  '错误': 'Error',
+  '关闭': 'Close',
   '连接失败': 'Connection failed',
   'Graph API 连接正常': 'Graph API connection OK',
   '导出': 'Export',
@@ -407,6 +414,12 @@ var SERVER_EN_PATTERNS = [
   [/^已移动 (\d+) 个账号$/, 'Moved $1 accounts'],
   [/^已启用 (\d+) 个账号$/, 'Enabled $1 accounts'],
   [/^已停用 (\d+) 个账号$/, 'Disabled $1 accounts'],
+  [/^批量测试完成：成功 (\d+)，失败 (\d+)(?:，超出上限未测 (\d+))?$/,
+    function (m, ok, fail, skipped) {
+      var s = 'Batch test done: ' + ok + ' ok, ' + fail + ' failed';
+      if (skipped) s += ', ' + skipped + ' skipped (over per-request cap)';
+      return s;
+    }],
   // Batch email deletion summary: "已删除 N 封" + optional failure/skip/permission suffixes
   [/^已删除 (\d+) 封(?:，失败 (\d+) 封)?(?:，超出单次上限未处理 (\d+) 封（请分批）)?(。该账号为只读授权，请「编辑账号 → 重新授权」获取读写权限)?$/,
     function (m, del, failed, skipped, forbidden) {

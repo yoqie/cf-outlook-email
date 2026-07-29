@@ -182,3 +182,66 @@ describe('accounts route: status recovery on token update', () => {
     expect(updateCall![6]).toBe('disabled');
   });
 });
+
+// Batch-test endpoint: validates input and updates account status from Graph results
+vi.mock('../src/graph', () => ({
+  getAccessToken: vi.fn(),
+}));
+
+describe('accounts route: batch-test', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rejects empty selection', async () => {
+    const accountsRoute = (await import('../src/routes/accounts')).default;
+    const mockDB = createMockDB();
+    const res = await accountsRoute.request(
+      '/batch-test',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [] }) },
+      { DB: mockDB } as any
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json() as { success: boolean };
+    expect(body.success).toBe(false);
+  });
+
+  it('marks connected accounts active and failed ones error', async () => {
+    const { getAccessToken } = await import('../src/graph');
+    vi.mocked(getAccessToken).mockImplementation(async (_cid: string, rt: string) => {
+      if (rt === 'rt1') return { token: 'access', newRefreshToken: 'rt1-new' };
+      return { error: { code: 'TOKEN_FAILED', message: 'invalid_grant' } };
+    });
+
+    const accountsRoute = (await import('../src/routes/accounts')).default;
+    const mockDB = createMockDB();
+
+    // query() for SELECT * WHERE id IN (...) uses stmt.all()
+    mockDB._stmt.all.mockResolvedValue({
+      results: [
+        { id: 1, email: 'ok@test.com', client_id: 'cid', refresh_token: 'rt1', status: 'active' },
+        { id: 2, email: 'bad@test.com', client_id: 'cid', refresh_token: 'rt2', status: 'active' },
+      ],
+    });
+
+    const res = await accountsRoute.request(
+      '/batch-test',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [1, 2] }) },
+      { DB: mockDB } as any
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      success: boolean;
+      data: { success: number; failed: number; results: { id: number; connected: boolean }[] };
+      message: string;
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.success).toBe(1);
+    expect(body.data.failed).toBe(1);
+    expect(body.data.results.find((r) => r.id === 1)?.connected).toBe(true);
+    expect(body.data.results.find((r) => r.id === 2)?.connected).toBe(false);
+    expect(body.message).toContain('成功 1');
+    expect(body.message).toContain('失败 1');
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+  });
+});

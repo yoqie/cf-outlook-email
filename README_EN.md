@@ -98,7 +98,7 @@ Works with all Outlook / Hotmail / Live accounts. Bulk import supported (format:
 **Core features (implemented)**
 
 - [x] 🔐 One-click OAuth & auto token refresh
-- [x] 👤 Account management (CRUD, connection test)
+- [x] 👤 Account management (CRUD, connection test / batch test)
 - [x] 🗂️ Group management (custom colors, group & status filters)
 - [x] 📦 Bulk import / export / delete / move
 - [x] 📤 Per-row & selected export

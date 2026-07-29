@@ -455,6 +455,7 @@ async function renderAccounts(el) {
     <button class="btn btn-sm" onclick="batchAction('move')">${t('移动分组')}</button>
     <button class="btn btn-sm" onclick="batchAction('enable')">${t('批量启用')}</button>
     <button class="btn btn-sm" onclick="batchAction('disable')">${t('批量停用')}</button>
+    <button class="btn btn-sm" onclick="batchTestAccounts(this)">${t('批量测试')}</button>
     <button class="btn btn-sm" onclick="exportSelected()">${t('导出选中')}</button>
     <button class="btn btn-sm btn-danger" onclick="batchAction('delete')">${t('批量删除')}</button>
     <button class="btn btn-sm" onclick="clearSelection()">${t('取消选择')}</button>
@@ -699,6 +700,69 @@ async function batchAction(action) {
   const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action, ids }) });
   if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); }
   else toast(res?.error?.message || t('操作失败'), 'error');
+}
+
+// Batch-test Graph connection for selected accounts.
+// Server caps each request at 40 (CF free-tier subrequest budget); larger
+// selections are chunked client-side so all selected accounts get tested.
+async function batchTestAccounts(btn) {
+  const ids = [...selectedAccountIds];
+  if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = t('测试中...'); }
+  toast(t('正在批量测试 {n} 个账号...', { n: ids.length }));
+
+  const CHUNK = 40;
+  let success = 0, failed = 0;
+  const failedList = [];
+
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const part = ids.slice(i, i + CHUNK);
+    const res = await api('/accounts/batch-test', {
+      method: 'POST',
+      body: JSON.stringify({ ids: part }),
+    });
+    if (!res?.success) {
+      // Whole chunk failed (network / auth) - count all as failed
+      failed += part.length;
+      for (const id of part) {
+        const acc = state.accounts.find(a => a.id === id);
+        failedList.push({ email: acc?.email || ('#' + id), error: res?.error?.message || t('操作失败') });
+      }
+      continue;
+    }
+    success += res.data?.success || 0;
+    failed += res.data?.failed || 0;
+    for (const r of (res.data?.results || [])) {
+      if (!r.connected) failedList.push({ email: r.email || ('#' + r.id), error: r.error || t('连接失败') });
+    }
+  }
+
+  if (btn) { btn.disabled = false; btn.textContent = t('批量测试'); }
+
+  // Show a summary modal when there are failures; otherwise a simple toast.
+  const summary = t('批量测试完成：成功 {ok}，失败 {fail}', { ok: success, fail: failed });
+  if (failedList.length) {
+    const rows = failedList.slice(0, 30).map(f =>
+      `<tr><td style="padding:4px 8px;font-size:12.5px">${esc(f.email)}</td>` +
+      `<td style="padding:4px 8px;font-size:12px;color:var(--danger);word-break:break-all">${esc(f.error)}</td></tr>`
+    ).join('');
+    const more = failedList.length > 30
+      ? `<div style="font-size:12px;color:var(--text-dim);margin-top:8px">${t('还有 {n} 个失败账号未列出', { n: failedList.length - 30 })}</div>`
+      : '';
+    showModal(summary, `
+      <div style="font-size:13px;margin-bottom:10px;color:var(--text-muted)">${t('失败账号一览（状态已标为异常）')}</div>
+      <div class="table-wrap" style="max-height:320px;overflow:auto"><table>
+        <thead><tr><th>${t('邮箱')}</th><th>${t('错误')}</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>${more}
+    `, async () => true);
+  } else {
+    toast(summary);
+  }
+
+  clearSelection();
+  navigate('accounts');
 }
 
 // Filter by status
