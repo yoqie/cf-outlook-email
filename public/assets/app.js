@@ -451,6 +451,7 @@ async function renderAccounts(el) {
     <button class="btn btn-sm" onclick="exportAccounts()">${t('导出全部')}</button>
     <button class="btn btn-sm" onclick="exportEmailsOnly()">${t('单导邮箱')}</button>
     <button class="btn btn-sm" id="oneClickTestBtn" onclick="oneClickTestAccounts(this)">${t('一键测试')}</button>
+    <button class="btn btn-sm btn-danger" id="deleteErrorBtn" onclick="deleteErrorAccounts(this)">${t('删除失效')}</button>
   </div>
   <div id="batchBar" style="display:none;margin-top:10px;padding:10px 14px;background:var(--primary-bg);border:1px solid var(--border-focus);border-radius:8px;align-items:center;gap:8px;font-size:13px">
     <span id="batchCount" style="color:var(--primary)"></span>
@@ -731,6 +732,28 @@ async function batchAction(action) {
 // Server caps each request at 40 (CF free-tier subrequest budget); larger
 // selections are chunked client-side so all selected accounts get tested.
 // One-click test: use selected accounts if any, otherwise all currently filtered accounts.
+async function deleteErrorAccounts(btn) {
+  // Always refresh so status reflects latest test results
+  await loadAccounts();
+  const errors = (state.accounts || []).filter(a => a.status === 'error');
+  if (!errors.length) { toast(t('没有状态为异常的账号')); return; }
+
+  if (!confirm(t('确认删除 {n} 个失效账号？此操作不可撤销。', { n: errors.length }))) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = t('删除中...'); }
+  const ids = errors.map(a => a.id);
+  const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'delete', ids }) });
+  if (btn) { btn.disabled = false; btn.textContent = t('删除失效'); }
+
+  if (res?.success) {
+    toast(res.message || t('已删除 {n} 个失效账号', { n: ids.length }));
+    clearSelection();
+    navigate('accounts');
+  } else {
+    toast(res?.error?.message || t('操作失败'), 'error');
+  }
+}
+
 async function oneClickTestAccounts(btn) {
   let ids = [...selectedAccountIds];
   if (!ids.length) {
