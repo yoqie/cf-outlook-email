@@ -22,6 +22,54 @@ function safeAccount(acc: AccountRow) {
   };
 }
 
+/** Keep only unique positive integers (export / batch / batch-test). */
+function parsePositiveIds(raw: unknown): number[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(',')
+      : [];
+  return [...new Set(
+    list
+      .map((v) => (typeof v === 'number' ? v : parseInt(String(v), 10)))
+      .filter((n) => Number.isInteger(n) && n > 0)
+  )];
+}
+
+/**
+ * Apply a Graph token probe result to the account row:
+ * success → active (+ rotated refresh_token), failure → error.
+ */
+async function persistTokenProbe(
+  db: D1Database,
+  acc: AccountRow,
+  result: { token?: string; newRefreshToken?: string; error?: { message?: string } }
+): Promise<{ connected: boolean; error?: string }> {
+  if (result.token) {
+    if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
+      await run(
+        db,
+        'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [result.newRefreshToken, 'active', acc.id]
+      );
+    } else {
+      await run(
+        db,
+        'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        ['active', acc.id]
+      );
+    }
+    return { connected: true };
+  }
+
+  await run(
+    db,
+    'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    ['error', acc.id]
+  );
+  return { connected: false, error: result.error?.message ?? 'Unknown error' };
+}
+
 // GET /api/accounts
 accounts.get('/', async (c) => {
   const groupId = c.req.query('group_id');
@@ -154,34 +202,33 @@ accounts.post('/', async (c) => {
 
 // GET /api/accounts/export - export accounts as text (same format as import)
 // MUST be before /:id to avoid being matched as id="export"
+// ?emails_only=1 → one email per line (no secrets pulled from DB)
 accounts.get('/export', async (c) => {
   const groupId = c.req.query('group_id');
   const idsParam = c.req.query('ids');
-  type ExportRow = { email: string; password: string; client_id: string; refresh_token: string };
+  const emailsOnly = c.req.query('emails_only') === '1' || c.req.query('emails_only') === 'true';
+  type ExportRow = { email: string; password?: string; client_id?: string; refresh_token?: string; created_at?: string };
+
+  const cols = emailsOnly
+    ? 'email, created_at'
+    : 'email, password, client_id, refresh_token, created_at';
 
   let rows: ExportRow[];
-  // `ids` (comma-separated) takes precedence — used for single-row and selected exports
   if (idsParam) {
-    const ids = idsParam
-      .split(',')
-      .map((s) => parseInt(s, 10))
-      .filter((n) => Number.isInteger(n));
-    if (!ids.length) return ok({ content: '', count: 0 });
-    // Chunked batch: D1 allows at most 100 bound parameters per statement.
-    // created_at is fetched so newest-first order survives the merge across chunks.
-    const results = await batchRun<ExportRow & { created_at: string }>(
+    const ids = parsePositiveIds(idsParam);
+    if (!ids.length) return ok({ content: '', count: 0, emails_only: emailsOnly });
+    const results = await batchRun<ExportRow>(
       c.env.DB,
       chunk(ids, D1_MAX_BOUND_PARAMS).map((part) => ({
-        sql: `SELECT email, password, client_id, refresh_token, created_at FROM accounts
-              WHERE id IN (${part.map(() => '?').join(',')})`,
+        sql: `SELECT ${cols} FROM accounts WHERE id IN (${part.map(() => '?').join(',')})`,
         params: part,
       }))
     );
     rows = results
       .flatMap((r) => r.results)
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+      .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
   } else {
-    let sql = 'SELECT email, password, client_id, refresh_token FROM accounts';
+    let sql = `SELECT ${cols} FROM accounts`;
     const params: unknown[] = [];
     if (groupId) {
       sql += ' WHERE group_id = ?';
@@ -191,14 +238,13 @@ accounts.get('/export', async (c) => {
     rows = await query<ExportRow>(c.env.DB, sql, params);
   }
 
-  const emailsOnly = c.req.query('emails_only') === '1' || c.req.query('emails_only') === 'true';
   const lines = emailsOnly
     ? rows.map((r) => r.email)
     : rows.map((r) => `${r.email}----${r.password || ''}----${r.client_id}----${r.refresh_token}`);
   return ok({ content: lines.join('\n'), count: rows.length, emails_only: emailsOnly });
 });
 
-// POST /api/accounts/batch - batch operations (delete / move group)
+// POST /api/accounts/batch - batch operations (delete / move / enable / disable / delete_error)
 // MUST be before /:id
 accounts.post('/batch', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -207,55 +253,72 @@ accounts.post('/batch', async (c) => {
     group_id?: number;
   };
 
-  if (!body.ids?.length) return badRequest('请选择账号');
-
-  // Each action runs as one atomic D1 batch; ids are chunked so every
-  // statement stays within D1's 100-bound-params limit.
   const inList = (part: number[]) => part.map(() => '?').join(',');
 
-  if (body.action === 'delete') {
+  // delete_error: wipe all status=error rows (no id list required)
+  if (body.action === 'delete_error') {
+    const doomed = await query<{ id: number }>(
+      c.env.DB,
+      "SELECT id FROM accounts WHERE status = 'error'"
+    );
+    if (!doomed.length) return ok({ deleted: 0 }, '没有状态为异常的账号');
+    const ids = doomed.map((r) => r.id);
+    // CASCADE covers account_tags; still chunk for D1 param limits
     await batchRun(
       c.env.DB,
-      chunk(body.ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+      chunk(ids, D1_MAX_BOUND_PARAMS).map((part) => ({
         sql: `DELETE FROM accounts WHERE id IN (${inList(part)})`,
         params: part,
       }))
     );
-    return ok(null, `已删除 ${body.ids.length} 个账号`);
+    return ok({ deleted: ids.length }, `已删除 ${ids.length} 个失效账号`);
+  }
+
+  const ids = parsePositiveIds(body.ids);
+  if (!ids.length) return badRequest('请选择账号');
+
+  if (body.action === 'delete') {
+    await batchRun(
+      c.env.DB,
+      chunk(ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+        sql: `DELETE FROM accounts WHERE id IN (${inList(part)})`,
+        params: part,
+      }))
+    );
+    return ok({ deleted: ids.length }, `已删除 ${ids.length} 个账号`);
   }
 
   if (body.action === 'move' && body.group_id !== undefined) {
-    // group_id occupies one bound slot per statement, hence limit - 1
     await batchRun(
       c.env.DB,
-      chunk(body.ids, D1_MAX_BOUND_PARAMS - 1).map((part) => ({
+      chunk(ids, D1_MAX_BOUND_PARAMS - 1).map((part) => ({
         sql: `UPDATE accounts SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${inList(part)})`,
         params: [body.group_id, ...part],
       }))
     );
-    return ok(null, `已移动 ${body.ids.length} 个账号`);
+    return ok(null, `已移动 ${ids.length} 个账号`);
   }
 
   if (body.action === 'enable') {
     await batchRun(
       c.env.DB,
-      chunk(body.ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+      chunk(ids, D1_MAX_BOUND_PARAMS).map((part) => ({
         sql: `UPDATE accounts SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id IN (${inList(part)})`,
         params: part,
       }))
     );
-    return ok(null, `已启用 ${body.ids.length} 个账号`);
+    return ok(null, `已启用 ${ids.length} 个账号`);
   }
 
   if (body.action === 'disable') {
     await batchRun(
       c.env.DB,
-      chunk(body.ids, D1_MAX_BOUND_PARAMS).map((part) => ({
+      chunk(ids, D1_MAX_BOUND_PARAMS).map((part) => ({
         sql: `UPDATE accounts SET status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id IN (${inList(part)})`,
         params: part,
       }))
     );
-    return ok(null, `已停用 ${body.ids.length} 个账号`);
+    return ok(null, `已停用 ${ids.length} 个账号`);
   }
 
   return badRequest('未知操作');
@@ -266,67 +329,44 @@ accounts.post('/batch', async (c) => {
 // the UI chunks larger selections into multiple calls.
 accounts.post('/batch-test', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { ids?: number[] };
-  if (!body.ids?.length) return badRequest('请选择账号');
-
-  // Deduplicate + keep only positive integers
-  const ids = [...new Set(
-    body.ids.filter((id) => Number.isInteger(id) && id > 0)
-  )];
+  const ids = parsePositiveIds(body.ids);
   if (!ids.length) return badRequest('请选择账号');
 
   const MAX_BATCH_TEST = 40;
   const capped = ids.slice(0, MAX_BATCH_TEST);
   const skipped = ids.length - capped.length;
 
-  const placeholders = capped.map(() => '?').join(',');
-  const accounts = await query<AccountRow>(
-    c.env.DB,
-    `SELECT * FROM accounts WHERE id IN (${placeholders})`,
-    capped
-  );
-  const byId = new Map(accounts.map((a) => [a.id, a]));
+  // Chunk SELECT in case caller sends exactly 40+; currently capped so one query is enough,
+  // but keep chunking for safety if MAX is raised later.
+  const accountRows: AccountRow[] = [];
+  for (const part of chunk(capped, D1_MAX_BOUND_PARAMS)) {
+    const rows = await query<AccountRow>(
+      c.env.DB,
+      `SELECT * FROM accounts WHERE id IN (${part.map(() => '?').join(',')})`,
+      part
+    );
+    accountRows.push(...rows);
+  }
+  const byId = new Map(accountRows.map((a) => [a.id, a]));
 
-  const results: {
-    id: number;
-    email: string;
-    connected: boolean;
-    error?: string;
-  }[] = [];
+  const results: { id: number; email: string; connected: boolean; error?: string }[] = [];
   let success = 0;
   let failed = 0;
 
   for (const id of capped) {
-    const acc = byId.get(id);
-    if (!acc) {
+    const accRow = byId.get(id);
+    if (!accRow) {
       results.push({ id, email: '', connected: false, error: '账号不存在' });
       failed++;
       continue;
     }
-
-    const result = await getAccessToken(acc.client_id, acc.refresh_token);
-    if (result.token) {
-      const updates: unknown[] = ['active', id];
-      let sql = 'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP';
-      if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
-        sql = 'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP';
-        updates.splice(0, 0, result.newRefreshToken);
-      }
-      sql += ' WHERE id = ?';
-      await run(c.env.DB, sql, updates);
-      results.push({ id, email: acc.email, connected: true });
+    const tokenResult = await getAccessToken(accRow.client_id, accRow.refresh_token);
+    const probe = await persistTokenProbe(c.env.DB, accRow, tokenResult);
+    if (probe.connected) {
+      results.push({ id, email: accRow.email, connected: true });
       success++;
     } else {
-      await run(
-        c.env.DB,
-        'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        ['error', id]
-      );
-      results.push({
-        id,
-        email: acc.email,
-        connected: false,
-        error: result.error?.message ?? 'Unknown error',
-      });
+      results.push({ id, email: accRow.email, connected: false, error: probe.error });
       failed++;
     }
   }
@@ -336,16 +376,7 @@ accounts.post('/batch-test', async (c) => {
       ? `批量测试完成：成功 ${success}，失败 ${failed}，超出上限未测 ${skipped}`
       : `批量测试完成：成功 ${success}，失败 ${failed}`;
 
-  return ok(
-    {
-      total: capped.length,
-      success,
-      failed,
-      skipped,
-      results,
-    },
-    msg
-  );
+  return ok({ total: capped.length, success, failed, skipped, results }, msg);
 });
 
 // GET /api/accounts/:id
@@ -466,35 +497,16 @@ accounts.delete('/:id', async (c) => {
 // POST /api/accounts/:id/test - test Graph connection
 accounts.post('/:id/test', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
-  const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [id]);
-  if (!acc) return notFound('账号不存在');
+  const accRow = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [id]);
+  if (!accRow) return notFound('账号不存在');
 
-  const result = await getAccessToken(acc.client_id, acc.refresh_token);
+  const tokenResult = await getAccessToken(accRow.client_id, accRow.refresh_token);
+  const probe = await persistTokenProbe(c.env.DB, accRow, tokenResult);
 
-  if (result.token) {
-    // Auto-save rotated refresh_token + mark active
-    const updates: unknown[] = ['active', id];
-    let sql = 'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP';
-    if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
-      sql = 'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP';
-      updates.splice(0, 0, result.newRefreshToken);
-    }
-    sql += ' WHERE id = ?';
-    await run(c.env.DB, sql, updates);
+  if (probe.connected) {
     return ok({ connected: true }, 'Graph API 连接正常');
   }
-
-  // Mark as error
-  await run(
-    c.env.DB,
-    'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    ['error', id]
-  );
-
-  return ok({
-    connected: false,
-    error: result.error?.message ?? 'Unknown error',
-  }, 'Graph API 连接失败');
+  return ok({ connected: false, error: probe.error }, 'Graph API 连接失败');
 });
 
 export default accounts;

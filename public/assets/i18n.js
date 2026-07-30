@@ -365,6 +365,7 @@ var SERVER_EN = {
   '请选择账号': 'Select accounts first',
   '未知操作': 'Unknown action',
   '账号不存在': 'Account not found',
+  '没有状态为异常的账号': 'No accounts in error status',
   '标签已更新': 'Tags updated',
   '状态更新成功': 'Status updated',
   '账号更新成功': 'Account updated',
@@ -422,6 +423,7 @@ var SERVER_EN = {
 var SERVER_EN_PATTERNS = [
   [/^成功添加 (\d+) 个账号$/, 'Added $1 accounts'],
   [/^已删除 (\d+) 个账号$/, 'Deleted $1 accounts'],
+  [/^已删除 (\d+) 个失效账号$/, 'Deleted $1 invalid accounts'],
   [/^已移动 (\d+) 个账号$/, 'Moved $1 accounts'],
   [/^已启用 (\d+) 个账号$/, 'Enabled $1 accounts'],
   [/^已停用 (\d+) 个账号$/, 'Disabled $1 accounts'],

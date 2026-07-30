@@ -10,6 +10,7 @@ function createMockDB() {
   };
   return {
     prepare: vi.fn(() => mockStmt),
+    batch: vi.fn(async (stmts: any[]) => stmts.map(() => ({ results: [], success: true, meta: {} }))),
     _stmt: mockStmt,
   };
 }
@@ -243,5 +244,38 @@ describe('accounts route: batch-test', () => {
     expect(body.message).toContain('成功 1');
     expect(body.message).toContain('失败 1');
     expect(getAccessToken).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('accounts route: delete_error', () => {
+  it('deletes only error-status accounts', async () => {
+    const accountsRoute = (await import('../src/routes/accounts')).default;
+    const mockDB = createMockDB();
+    mockDB._stmt.all.mockResolvedValue({ results: [{ id: 3 }, { id: 7 }] });
+    const res = await accountsRoute.request(
+      '/batch',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete_error' }) },
+      { DB: mockDB } as any
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { success: boolean; data: { deleted: number }; message: string };
+    expect(body.success).toBe(true);
+    expect(body.data.deleted).toBe(2);
+    expect(body.message).toContain('失效');
+  });
+
+  it('returns zero when no error accounts', async () => {
+    const accountsRoute = (await import('../src/routes/accounts')).default;
+    const mockDB = createMockDB();
+    mockDB._stmt.all.mockResolvedValue({ results: [] });
+    const res = await accountsRoute.request(
+      '/batch',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete_error' }) },
+      { DB: mockDB } as any
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { success: boolean; data: { deleted: number }; message: string };
+    expect(body.data.deleted).toBe(0);
+    expect(body.message).toContain('没有');
   });
 });

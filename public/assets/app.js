@@ -95,6 +95,16 @@ async function api(path, options = {}) {
   return data;
 }
 
+// Run an async action while a button shows a busy label; always restore on settle.
+async function withButtonBusy(btn, busyText, idleText, fn) {
+  if (btn) { btn.disabled = true; btn.textContent = busyText; }
+  try {
+    return await fn();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = idleText; }
+  }
+}
+
 function toast(msg, type = 'success', duration = 3000) {
   const container = document.getElementById('toastContainer');
   const el = document.createElement('div');
@@ -610,7 +620,10 @@ async function exportAccounts(ids, opts) {
   if (emailsOnly) params.push('emails_only=1');
   if (params.length) url += '?' + params.join('&');
   const res = await api(url);
-  if (!res?.success || !res.data?.content) { toast(t('没有可导出的账号'), 'error'); return; }
+  if (!res?.success || !res.data || !res.data.count) {
+    toast(t('没有可导出的账号'), 'error');
+    return;
+  }
 
   const title = emailsOnly
     ? t('单导邮箱 ({n} 个)', { n: res.data.count })
@@ -622,7 +635,7 @@ async function exportAccounts(ids, opts) {
   showModal(title, `
     <div class="form-group">
       <label class="form-label">${formatHint}</label>
-      <textarea class="form-textarea" id="exportData" rows="10" readonly style="font-size:12px">${esc(res.data.content)}</textarea>
+      <textarea class="form-textarea" id="exportData" rows="10" readonly style="font-size:12px">${esc(res.data.content || '')}</textarea>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-primary btn-sm" type="button" onclick="copyText(document.getElementById('exportData').value,this)">${t('复制全部')}</button>
@@ -635,17 +648,14 @@ function exportEmailsOnly() {
   return exportAccounts(undefined, { emailsOnly: true });
 }
 
-// Export currently selected accounts (from the batch bar)
-function exportSelected() {
+function exportSelected(emailsOnly) {
   const ids = [...selectedAccountIds];
   if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
-  exportAccounts(ids);
+  return exportAccounts(ids, emailsOnly ? { emailsOnly: true } : undefined);
 }
 
 function exportSelectedEmails() {
-  const ids = [...selectedAccountIds];
-  if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
-  exportAccounts(ids, { emailsOnly: true });
+  return exportSelected(true);
 }
 
 function downloadExport(prefix) {
@@ -733,25 +743,26 @@ async function batchAction(action) {
 // selections are chunked client-side so all selected accounts get tested.
 // One-click test: use selected accounts if any, otherwise all currently filtered accounts.
 async function deleteErrorAccounts(btn) {
-  // Always refresh so status reflects latest test results
+  // Fresh list so counts match latest test results
   await loadAccounts();
-  const errors = (state.accounts || []).filter(a => a.status === 'error');
-  if (!errors.length) { toast(t('没有状态为异常的账号')); return; }
+  const errorCount = (state.accounts || []).filter(a => a.status === 'error').length;
+  if (!errorCount) { toast(t('没有状态为异常的账号')); return; }
 
-  if (!confirm(t('确认删除 {n} 个失效账号？此操作不可撤销。', { n: errors.length }))) return;
+  if (!confirm(t('确认删除 {n} 个失效账号？此操作不可撤销。', { n: errorCount }))) return;
 
-  if (btn) { btn.disabled = true; btn.textContent = t('删除中...'); }
-  const ids = errors.map(a => a.id);
-  const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'delete', ids }) });
-  if (btn) { btn.disabled = false; btn.textContent = t('删除失效'); }
-
-  if (res?.success) {
-    toast(res.message || t('已删除 {n} 个失效账号', { n: ids.length }));
-    clearSelection();
-    navigate('accounts');
-  } else {
-    toast(res?.error?.message || t('操作失败'), 'error');
-  }
+  await withButtonBusy(btn, t('删除中...'), t('删除失效'), async () => {
+    const res = await api('/accounts/batch', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'delete_error' }),
+    });
+    if (res?.success) {
+      toast(res.message || t('已删除 {n} 个失效账号', { n: res.data?.deleted ?? errorCount }));
+      clearSelection();
+      navigate('accounts');
+    } else {
+      toast(res?.error?.message || t('操作失败'), 'error');
+    }
+  });
 }
 
 async function oneClickTestAccounts(btn) {
@@ -764,68 +775,64 @@ async function oneClickTestAccounts(btn) {
   await batchTestAccounts(btn, ids, true);
 }
 
-// Batch-test Graph connection for given/selected accounts.
-// Server caps each request at 40 (CF free-tier subrequest budget); larger
-// selections are chunked client-side so all selected accounts get tested.
+// Batch-test Graph connection. Server caps each request at 40 (CF free-tier
+// subrequest budget); larger selections are chunked client-side.
 async function batchTestAccounts(btn, explicitIds, isOneClick) {
   const ids = explicitIds?.length ? [...explicitIds] : [...selectedAccountIds];
   if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
 
   const idleLabel = isOneClick ? t('一键测试') : t('批量测试');
-  if (btn) { btn.disabled = true; btn.textContent = t('测试中...'); }
-  toast(t('正在批量测试 {n} 个账号...', { n: ids.length }));
+  await withButtonBusy(btn, t('测试中...'), idleLabel, async () => {
+    toast(t('正在批量测试 {n} 个账号...', { n: ids.length }));
 
-  const CHUNK = 40;
-  let success = 0, failed = 0;
-  const failedList = [];
+    const CHUNK = 40;
+    let success = 0, failed = 0;
+    const failedList = [];
+    const emailById = new Map((state.accounts || []).map(a => [a.id, a.email]));
 
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const part = ids.slice(i, i + CHUNK);
-    const res = await api('/accounts/batch-test', {
-      method: 'POST',
-      body: JSON.stringify({ ids: part }),
-    });
-    if (!res?.success) {
-      // Whole chunk failed (network / auth) - count all as failed
-      failed += part.length;
-      for (const id of part) {
-        const acc = state.accounts.find(a => a.id === id);
-        failedList.push({ email: acc?.email || ('#' + id), error: res?.error?.message || t('操作失败') });
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const part = ids.slice(i, i + CHUNK);
+      const res = await api('/accounts/batch-test', {
+        method: 'POST',
+        body: JSON.stringify({ ids: part }),
+      });
+      if (!res?.success) {
+        failed += part.length;
+        for (const id of part) {
+          failedList.push({ email: emailById.get(id) || ('#' + id), error: res?.error?.message || t('操作失败') });
+        }
+        continue;
       }
-      continue;
+      success += res.data?.success || 0;
+      failed += res.data?.failed || 0;
+      for (const r of (res.data?.results || [])) {
+        if (!r.connected) failedList.push({ email: r.email || emailById.get(r.id) || ('#' + r.id), error: r.error || t('连接失败') });
+      }
     }
-    success += res.data?.success || 0;
-    failed += res.data?.failed || 0;
-    for (const r of (res.data?.results || [])) {
-      if (!r.connected) failedList.push({ email: r.email || ('#' + r.id), error: r.error || t('连接失败') });
+
+    const summary = t('批量测试完成：成功 {ok}，失败 {fail}', { ok: success, fail: failed });
+    if (failedList.length) {
+      const rows = failedList.slice(0, 30).map(f =>
+        `<tr><td style="padding:4px 8px;font-size:12.5px">${esc(f.email)}</td>` +
+        `<td style="padding:4px 8px;font-size:12px;color:var(--danger);word-break:break-all">${esc(f.error)}</td></tr>`
+      ).join('');
+      const more = failedList.length > 30
+        ? `<div style="font-size:12px;color:var(--text-dim);margin-top:8px">${t('还有 {n} 个失败账号未列出', { n: failedList.length - 30 })}</div>`
+        : '';
+      showModal(summary, `
+        <div style="font-size:13px;margin-bottom:10px;color:var(--text-muted)">${t('失败账号一览（状态已标为异常）')}</div>
+        <div class="table-wrap" style="max-height:320px;overflow:auto"><table>
+          <thead><tr><th>${t('邮箱')}</th><th>${t('错误')}</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>${more}
+      `, async () => true);
+    } else {
+      toast(summary);
     }
-  }
 
-  if (btn) { btn.disabled = false; btn.textContent = idleLabel; }
-
-  // Show a summary modal when there are failures; otherwise a simple toast.
-  const summary = t('批量测试完成：成功 {ok}，失败 {fail}', { ok: success, fail: failed });
-  if (failedList.length) {
-    const rows = failedList.slice(0, 30).map(f =>
-      `<tr><td style="padding:4px 8px;font-size:12.5px">${esc(f.email)}</td>` +
-      `<td style="padding:4px 8px;font-size:12px;color:var(--danger);word-break:break-all">${esc(f.error)}</td></tr>`
-    ).join('');
-    const more = failedList.length > 30
-      ? `<div style="font-size:12px;color:var(--text-dim);margin-top:8px">${t('还有 {n} 个失败账号未列出', { n: failedList.length - 30 })}</div>`
-      : '';
-    showModal(summary, `
-      <div style="font-size:13px;margin-bottom:10px;color:var(--text-muted)">${t('失败账号一览（状态已标为异常）')}</div>
-      <div class="table-wrap" style="max-height:320px;overflow:auto"><table>
-        <thead><tr><th>${t('邮箱')}</th><th>${t('错误')}</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>${more}
-    `, async () => true);
-  } else {
-    toast(summary);
-  }
-
-  clearSelection();
-  navigate('accounts');
+    clearSelection();
+    navigate('accounts');
+  });
 }
 
 // Filter by status
@@ -1088,17 +1095,15 @@ async function showEditAccountModal(id) {
 }
 
 async function testAccount(id, btn) {
-  btn.disabled = true;
-  btn.textContent = t('测试中...');
-  const res = await api(`/accounts/${id}/test`, { method: 'POST' });
-  btn.disabled = false;
-  btn.textContent = t('测试');
-  if (res?.success && res.data?.connected) {
-    toast(t('Graph API 连接正常'));
-  } else {
-    toast(res?.data?.error || res?.error?.message || t('连接失败'), 'error');
-  }
-  navigate('accounts');
+  await withButtonBusy(btn, t('测试中...'), t('测试'), async () => {
+    const res = await api(`/accounts/${id}/test`, { method: 'POST' });
+    if (res?.success && res.data?.connected) {
+      toast(t('Graph API 连接正常'));
+    } else {
+      toast(res?.data?.error || res?.error?.message || t('连接失败'), 'error');
+    }
+    navigate('accounts');
+  });
 }
 
 async function toggleAccountStatus(id, currentStatus) {
