@@ -1,0 +1,12 @@
+﻿const fs = require('fs');
+const app = fs.readFileSync('public/assets/app.js','utf8');
+const h = app.indexOf("<th style=\"text-align:center\">${t('邮箱')}</th>");
+console.log('header', h);
+console.log(app.slice(h, h+450));
+const r = app.indexOf('class="acc-check"');
+console.log('\nrow\n', app.slice(r-100, r+1400));
+const css = fs.readFileSync('public/assets/style.css','utf8');
+const c = css.indexOf('accounts-table');
+console.log('\ncss\n', css.slice(c, c+500));
+const c2 = css.indexOf('.accounts-table-wrap');
+console.log('wrap css', c2 >= 0 ? css.slice(c2, c2+400) : 'none');

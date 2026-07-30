@@ -483,10 +483,15 @@ async function renderAccounts(el) {
 
   el.innerHTML = `<div class="accounts-layout">
   ${toolbar}
-  <div class="table-wrap accounts-table-wrap"><table>
+  <div class="table-wrap accounts-table-wrap"><table class="accounts-table">
     <thead><tr>
-      <th style="width:32px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
-      <th style="text-align:center">${t('邮箱')}</th><th style="text-align:center">${t('分组')}</th><th style="text-align:center">${t('状态')}</th><th style="text-align:center">${t('备注')}</th><th style="text-align:center">${t('操作')}</th><th style="text-align:center;white-space:nowrap">${t('导入日期')}</th>
+      <th class="col-check"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
+      <th class="col-email">${t('邮箱')}</th>
+      <th class="col-group">${t('分组')}</th>
+      <th class="col-status">${t('状态')}</th>
+      <th class="col-remark">${t('备注')}</th>
+      <th class="col-actions">${t('操作')}</th>
+      <th class="col-date">${t('导入日期')}</th>
     </tr></thead>
     <tbody id="accountsBody"></tbody>
   </table></div>
@@ -565,26 +570,27 @@ function accTurnPage(delta) {
 
 function renderAccountRows(accounts) {
   return accounts.map(a => `<tr>
-    <td><input type="checkbox" class="acc-check" value="${a.id}" onchange="onAccountCheck(this)" ${selectedAccountIds.has(a.id) ? 'checked' : ''}></td>
-    <td>
-      <div style="display:flex;align-items:center;gap:6px">
+    <td class="col-check"><input type="checkbox" class="acc-check" value="${a.id}" onchange="onAccountCheck(this)" ${selectedAccountIds.has(a.id) ? 'checked' : ''}></td>
+    <td class="col-email">
+      <div class="email-cell">
         <a class="email-link" onclick="goToEmail(${a.id})" title="${t('查看该账号邮件')}">${esc(a.email)}</a>
-        <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;opacity:0.6" onclick="copyText('${esc(a.email)}',this)" title="${t('复制邮箱')}">${t('复制')}</button>
+        <button class="btn btn-sm email-copy-btn" onclick="copyText('${esc(a.email)}',this)" title="${t('复制邮箱')}">${t('复制')}</button>
       </div>
       ${tagBadgesHtml(a.tags)}
     </td>
-    <td><span class="color-dot" style="background:${esc(a.group_color)}"></span>${esc(a.group_name)}</td>
-    <td><span class="badge badge-${a.status}">${accountStatusLabel(a.status)}</span></td>
-    <td style="color:var(--text-muted);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.remark)}</td>
-    
-    <td style="white-space:nowrap">
-      <button class="btn btn-sm" onclick="showEditAccountModal(${a.id})">${t('编辑')}</button>
-      <button class="btn btn-sm" onclick="testAccount(${a.id},this)">${t('测试')}</button>
-      <button class="btn btn-sm" onclick="exportAccounts([${a.id}])">${t('导出')}</button>
-      <button class="btn btn-sm" onclick="toggleAccountStatus(${a.id},'${a.status}')">${a.status === 'active' ? t('停用') : t('启用')}</button>
-      <button class="btn btn-sm btn-danger" onclick="deleteAccount(${a.id})">${t('删除')}</button>
+    <td class="col-group"><span class="group-cell"><span class="color-dot" style="background:${esc(a.group_color)}"></span><span class="group-name">${esc(a.group_name)}</span></span></td>
+    <td class="col-status"><span class="badge badge-${a.status}">${accountStatusLabel(a.status)}</span></td>
+    <td class="col-remark" title="${esc(a.remark || '')}">${esc(a.remark)}</td>
+    <td class="col-actions">
+      <div class="row-actions">
+        <button class="btn btn-sm" onclick="showEditAccountModal(${a.id})">${t('编辑')}</button>
+        <button class="btn btn-sm" onclick="testAccount(${a.id},this)">${t('测试')}</button>
+        <button class="btn btn-sm" onclick="exportAccounts([${a.id}])">${t('导出')}</button>
+        <button class="btn btn-sm" onclick="toggleAccountStatus(${a.id},'${a.status}')">${a.status === 'active' ? t('停用') : t('启用')}</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteAccount(${a.id})">${t('删除')}</button>
+      </div>
     </td>
-    <td style="text-align:center;white-space:nowrap;color:var(--text-muted);font-size:12.5px" title="${esc(a.created_at || '')}">${formatImportDate(a.created_at)}</td>
+    <td class="col-date" title="${esc(a.created_at || '')}">${formatImportDate(a.created_at)}</td>
   </tr>`).join('');
 }
 

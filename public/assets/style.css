@@ -636,3 +636,29 @@ tr:hover td { background: var(--bg-hover); }
   .form-input:focus, .form-select:focus, .form-textarea:focus,
   .search-input:focus { animation: none; }
 }
+
+/* ===== Accounts table column alignment (header matches body) ===== */
+.accounts-table { width: 100%; border-collapse: collapse; }
+.accounts-table th,
+.accounts-table td { vertical-align: middle; padding: 10px 12px; }
+.accounts-table .col-check { width: 40px; text-align: center; }
+.accounts-table .col-email { text-align: left; min-width: 200px; }
+.accounts-table .col-group { text-align: left; white-space: nowrap; }
+.accounts-table .col-status { text-align: center; width: 88px; }
+.accounts-table .col-remark {
+  text-align: left; max-width: 160px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted);
+}
+.accounts-table .col-actions { text-align: center; white-space: nowrap; }
+.accounts-table .col-date {
+  text-align: center; white-space: nowrap; color: var(--text-muted);
+  font-size: 12.5px; width: 1%;
+}
+.accounts-table .email-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.accounts-table .email-copy-btn { padding: 2px 6px; font-size: 10px; opacity: 0.6; flex-shrink: 0; }
+.accounts-table .group-cell { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; }
+.accounts-table .group-name { overflow: hidden; text-overflow: ellipsis; }
+.accounts-table .row-actions {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 4px;
+}
