@@ -3,7 +3,7 @@ import type { Env, AccountRow } from '../types';
 import { query, first, run, batchRun, chunk, D1_MAX_BOUND_PARAMS } from '../db';
 import { ok, badRequest, notFound } from '../response';
 import { maskToken, isValidEmail } from '../utils/validation';
-import { getAccessToken } from '../graph';
+import { ensureAccessToken } from '../accountToken';
 
 const accounts = new Hono<{ Bindings: Env }>();
 
@@ -34,40 +34,6 @@ function parsePositiveIds(raw: unknown): number[] {
       .map((v) => (typeof v === 'number' ? v : parseInt(String(v), 10)))
       .filter((n) => Number.isInteger(n) && n > 0)
   )];
-}
-
-/**
- * Apply a Graph token probe result to the account row:
- * success → active (+ rotated refresh_token), failure → error.
- */
-async function persistTokenProbe(
-  db: D1Database,
-  acc: AccountRow,
-  result: { token?: string; newRefreshToken?: string; error?: { message?: string } }
-): Promise<{ connected: boolean; error?: string }> {
-  if (result.token) {
-    if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
-      await run(
-        db,
-        'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [result.newRefreshToken, 'active', acc.id]
-      );
-    } else {
-      await run(
-        db,
-        'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        ['active', acc.id]
-      );
-    }
-    return { connected: true };
-  }
-
-  await run(
-    db,
-    'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    ['error', acc.id]
-  );
-  return { connected: false, error: result.error?.message ?? 'Unknown error' };
 }
 
 // GET /api/accounts
@@ -150,33 +116,41 @@ accounts.post('/', async (c) => {
 
   const groupId = body.group_id ?? 1;
 
-  // Batch import mode
+    // Batch import mode (chunked D1 batch; INSERT OR IGNORE skips dup emails)
   if (body.account_string) {
     const lines = body.account_string.trim().split('\n');
-    let added = 0;
+    const rows: unknown[][] = [];
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const parts = trimmed.split('----');
-      if (parts.length >= 4) {
-        const [email, password, clientId, refreshToken] = parts;
-        try {
-          await run(
-            c.env.DB,
-            'INSERT INTO accounts (email, password, client_id, refresh_token, group_id) VALUES (?, ?, ?, ?, ?)',
-            [email.trim(), password.trim(), clientId.trim(), refreshToken.trim(), groupId]
-          );
-          added++;
-        } catch {
-          // Duplicate email, skip
-        }
+      if (parts.length < 4) continue;
+      const [email, password, clientId, refreshToken] = parts;
+      const em = email.trim();
+      if (!em || !clientId.trim() || !refreshToken.trim()) continue;
+      rows.push([em, password.trim(), clientId.trim(), refreshToken.trim(), groupId]);
+    }
+    if (!rows.length) return badRequest('没有新账号被添加（可能格式错误或已存在）');
+
+    let added = 0;
+    for (const part of chunk(rows, 25)) {
+      const results = await batchRun(
+        c.env.DB,
+        part.map((params) => ({
+          sql: 'INSERT OR IGNORE INTO accounts (email, password, client_id, refresh_token, group_id) VALUES (?, ?, ?, ?, ?)',
+          params,
+        }))
+      );
+      for (const r of results) {
+        if ((r.meta as { changes?: number } | undefined)?.changes) added++;
       }
     }
+
     if (added > 0) return ok({ added }, `成功添加 ${added} 个账号`);
     return badRequest('没有新账号被添加（可能格式错误或已存在）');
   }
 
-  // Single add mode
+// Single add mode
   const email = body.email?.trim();
   const clientId = body.client_id?.trim();
   const refreshToken = body.refresh_token?.trim();
@@ -360,15 +334,14 @@ accounts.post('/batch-test', async (c) => {
       failed++;
       continue;
     }
-    const tokenResult = await getAccessToken(accRow.client_id, accRow.refresh_token);
-    const probe = await persistTokenProbe(c.env.DB, accRow, tokenResult);
-    if (probe.connected) {
-      results.push({ id, email: accRow.email, connected: true });
-      success++;
-    } else {
-      results.push({ id, email: accRow.email, connected: false, error: probe.error });
-      failed++;
-    }
+    const probe = await ensureAccessToken(c.env.DB, accRow);
+        if (probe.token) {
+          results.push({ id, email: accRow.email, connected: true });
+          success++;
+        } else {
+          results.push({ id, email: accRow.email, connected: false, error: probe.error });
+          failed++;
+        }
   }
 
   const msg =
@@ -500,10 +473,8 @@ accounts.post('/:id/test', async (c) => {
   const accRow = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [id]);
   if (!accRow) return notFound('账号不存在');
 
-  const tokenResult = await getAccessToken(accRow.client_id, accRow.refresh_token);
-  const probe = await persistTokenProbe(c.env.DB, accRow, tokenResult);
-
-  if (probe.connected) {
+  const probe = await ensureAccessToken(c.env.DB, accRow);
+  if (probe.token) {
     return ok({ connected: true }, 'Graph API 连接正常');
   }
   return ok({ connected: false, error: probe.error }, 'Graph API 连接失败');

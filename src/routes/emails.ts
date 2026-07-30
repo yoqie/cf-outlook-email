@@ -1,38 +1,11 @@
 import { Hono } from 'hono';
 import type { Env, AccountRow } from '../types';
-import { first, run } from '../db';
+import { first } from '../db';
 import { ok, notFound, badRequest } from '../response';
-import { getAccessToken, fetchEmails, fetchEmailDetail, deleteEmail, listAttachments, getAttachment } from '../graph';
+import { fetchEmails, fetchEmailDetail, deleteEmail, listAttachments, getAttachment } from '../graph';
+import { ensureAccessToken } from '../accountToken';
 
 const emails = new Hono<{ Bindings: Env }>();
-
-// Helper: get token and auto-save rotated refresh_token
-async function getTokenAndRefresh(
-  db: D1Database,
-  acc: AccountRow
-): Promise<{ token?: string; error?: string }> {
-  const result = await getAccessToken(acc.client_id, acc.refresh_token);
-
-  if (!result.token) {
-    await run(db, 'UPDATE accounts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['error', acc.id]);
-    return { error: result.error?.message ?? 'Token acquisition failed' };
-  }
-
-  // Auto-save new refresh_token if Microsoft rotated it
-  if (result.newRefreshToken && result.newRefreshToken !== acc.refresh_token) {
-    await run(
-      db,
-      'UPDATE accounts SET refresh_token = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [result.newRefreshToken, 'active', acc.id]
-    );
-  } else if (acc.status === 'error') {
-    // Token works without rotation (e.g. right after a manual re-auth):
-    // clear the stale error flag so the account shows healthy again
-    await run(db, "UPDATE accounts SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [acc.id]);
-  }
-
-  return { token: result.token };
-}
 
 // GET /api/accounts/:id/emails
 emails.get('/', async (c) => {
@@ -49,7 +22,7 @@ emails.get('/', async (c) => {
   const skip = parseInt(c.req.query('skip') ?? '0', 10);
   const keyword = c.req.query('keyword');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  const tokenResult = await ensureAccessToken(c.env.DB, acc);
   if (!tokenResult.token) {
     return ok({ items: [], error: tokenResult.error }, 'Graph API 认证失败');
   }
@@ -83,7 +56,7 @@ emails.get('/:messageId', async (c) => {
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  const tokenResult = await ensureAccessToken(c.env.DB, acc);
   if (!tokenResult.token) {
     return badRequest('Graph API 认证失败');
   }
@@ -124,7 +97,7 @@ emails.get('/:messageId/attachments', async (c) => {
   const messageId = c.req.param('messageId')!;
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  const tokenResult = await ensureAccessToken(c.env.DB, acc);
   if (!tokenResult.token) return badRequest('Graph API 认证失败');
   const result = await listAttachments(tokenResult.token, messageId);
   if (result.error) return badRequest(result.error.message);
@@ -139,7 +112,7 @@ emails.get('/:messageId/attachments/:attId', async (c) => {
   const attId = c.req.param('attId')!;
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  const tokenResult = await ensureAccessToken(c.env.DB, acc);
   if (!tokenResult.token) return badRequest('Graph API 认证失败');
 
   const result = await getAttachment(tokenResult.token, messageId, attId);
@@ -173,7 +146,7 @@ emails.post('/batch-delete', async (c) => {
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  const tokenResult = await ensureAccessToken(c.env.DB, acc);
   if (!tokenResult.token) return badRequest('Graph API 认证失败');
 
   // Cap per request: 1 token call + N deletes must stay under the 50-subrequest limit
@@ -200,7 +173,7 @@ emails.delete('/:messageId', async (c) => {
   const acc = await first<AccountRow>(c.env.DB, 'SELECT * FROM accounts WHERE id = ?', [accountId]);
   if (!acc) return notFound('账号不存在');
 
-  const tokenResult = await getTokenAndRefresh(c.env.DB, acc);
+  const tokenResult = await ensureAccessToken(c.env.DB, acc);
   if (!tokenResult.token) return badRequest('Graph API 认证失败');
 
   const result = await deleteEmail(tokenResult.token, messageId);

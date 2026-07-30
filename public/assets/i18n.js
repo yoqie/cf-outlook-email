@@ -136,6 +136,7 @@ var I18N_EN = {
   '分组': 'Group',
   '状态': 'Status',
   '备注': 'Remark',
+  '导入日期': 'Imported At',
   '每页': 'Per page',
   '条': 'rows',
   '上一页': 'Prev',

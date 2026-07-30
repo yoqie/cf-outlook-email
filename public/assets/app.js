@@ -486,7 +486,7 @@ async function renderAccounts(el) {
   <div class="table-wrap accounts-table-wrap"><table>
     <thead><tr>
       <th style="width:32px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
-      <th>${t('邮箱')}</th><th>${t('分组')}</th><th>${t('状态')}</th><th>${t('备注')}</th><th>${t('操作')}</th>
+      <th style="text-align:center">${t('邮箱')}</th><th style="text-align:center">${t('分组')}</th><th style="text-align:center">${t('状态')}</th><th style="text-align:center">${t('备注')}</th><th style="text-align:center">${t('操作')}</th><th style="text-align:center;white-space:nowrap">${t('导入日期')}</th>
     </tr></thead>
     <tbody id="accountsBody"></tbody>
   </table></div>
@@ -574,8 +574,9 @@ function renderAccountRows(accounts) {
       ${tagBadgesHtml(a.tags)}
     </td>
     <td><span class="color-dot" style="background:${esc(a.group_color)}"></span>${esc(a.group_name)}</td>
-    <td><span class="badge badge-${a.status}">${a.status}</span></td>
+    <td><span class="badge badge-${a.status}">${accountStatusLabel(a.status)}</span></td>
     <td style="color:var(--text-muted);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.remark)}</td>
+    
     <td style="white-space:nowrap">
       <button class="btn btn-sm" onclick="showEditAccountModal(${a.id})">${t('编辑')}</button>
       <button class="btn btn-sm" onclick="testAccount(${a.id},this)">${t('测试')}</button>
@@ -583,6 +584,7 @@ function renderAccountRows(accounts) {
       <button class="btn btn-sm" onclick="toggleAccountStatus(${a.id},'${a.status}')">${a.status === 'active' ? t('停用') : t('启用')}</button>
       <button class="btn btn-sm btn-danger" onclick="deleteAccount(${a.id})">${t('删除')}</button>
     </td>
+    <td style="text-align:center;white-space:nowrap;color:var(--text-muted);font-size:12.5px" title="${esc(a.created_at || '')}">${formatImportDate(a.created_at)}</td>
   </tr>`).join('');
 }
 
@@ -661,7 +663,8 @@ function exportSelectedEmails() {
 function downloadExport(prefix) {
   const text = document.getElementById('exportData')?.value;
   if (!text) return;
-  const name = (prefix || 'accounts') + '_' + new Date().toISOString().slice(0, 10) + '.txt';
+  // Keep filename stable — no date suffix (import date is table-only)
+  const name = (prefix || 'accounts') + '.txt';
   const blob = new Blob([text], { type: 'text/plain' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1896,6 +1899,29 @@ function esc(str) {
   const d = document.createElement('div');
   d.textContent = String(str);
   return d.innerHTML;
+}
+
+function accountStatusLabel(status) {
+  if (status === 'active') return t('活跃');
+  if (status === 'disabled') return t('停用');
+  if (status === 'error') return t('异常');
+  return status || '';
+}
+
+function formatImportDate(dateStr) {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const locale = LANG === 'en' ? 'en-US' : 'zh-CN';
+    // Always show date+time so import time is comparable across rows
+    return d.toLocaleString(locale, {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+  } catch {
+    return dateStr;
+  }
 }
 
 function formatDate(dateStr) {

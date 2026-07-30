@@ -1,6 +1,7 @@
 import type { Env, AccountRow } from './types';
 import { query, first, run } from './db';
-import { getAccessToken, fetchEmails } from './graph';
+import { fetchEmails } from './graph';
+import { ensureAccessToken } from './accountToken';
 import { sendTelegramMessage, escapeHtml } from './telegram';
 
 // Hard cap per run: each account = 1 subrequest (token refresh); free plan allows 50/invocation
@@ -57,19 +58,9 @@ export async function runTokenRefresh(env: Env, opts: { force?: boolean } = {}):
   let ok = 0;
   let fail = 0;
   for (const acc of accounts) {
-    const res = await getAccessToken(acc.client_id, acc.refresh_token);
-    if (res.token) {
-      ok++;
-      const newToken = res.newRefreshToken && res.newRefreshToken !== acc.refresh_token ? res.newRefreshToken : acc.refresh_token;
-      await run(
-        db,
-        "UPDATE accounts SET refresh_token = ?, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [newToken, acc.id]
-      );
-    } else {
-      fail++;
-      await run(db, "UPDATE accounts SET status = 'error', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [acc.id]);
-    }
+    const res = await ensureAccessToken(db, acc, { touch: true });
+    if (res.token) ok++;
+    else fail++;
   }
 
   const summary = `${new Date().toISOString()} 刷新 ${accounts.length} 个：成功 ${ok}，失败 ${fail}`;
@@ -116,7 +107,7 @@ export async function runEmailPush(env: Env, opts: { force?: boolean } = {}): Pr
   let sent = 0;
   let failedAccounts = 0;
   for (const acc of accounts) {
-    const tok = await getAccessToken(acc.client_id, acc.refresh_token);
+    const tok = await ensureAccessToken(db, acc);
     if (!tok.token) {
       failedAccounts++;
       continue;
